@@ -428,6 +428,10 @@ func ArtistLatestSongs(id int64, limit int) ([]Track, error) {
 
 var ErrUnavailable = errors.New("this song isn't available to stream")
 
+// ErrNoCopyright is ErrUnavailable for a song NetEase has no rights to,
+// which no account plays.
+var ErrNoCopyright = fmt.Errorf("%w: no copyright", ErrUnavailable)
+
 // StreamError means the address request failed, not that the song cannot play.
 type StreamError struct {
 	Code  int
@@ -500,6 +504,7 @@ func SongURLContext(ctx context.Context, id int64, level string) (*Stream, error
 
 type songURLData struct {
 	ID            int64           `json:"id"`
+	Code          int             `json:"code"`
 	URL           string          `json:"url"`
 	Size          int64           `json:"size"`
 	Type          string          `json:"type"`
@@ -565,6 +570,15 @@ func streamFromSongURLData(code int, d songURLData, level string) (*Stream, erro
 		return nil, ErrUnavailable
 	}
 	if strings.TrimSpace(d.URL) == "" {
+		// The song's own code says why it has no address: 404, NetEase
+		// holds no rights to it; -110, the account may not play it. A
+		// retry gets the same answer.
+		switch d.Code {
+		case 404:
+			return nil, ErrNoCopyright
+		case -110:
+			return nil, ErrUnavailable
+		}
 		return nil, &StreamError{Code: code}
 	}
 	s := Stream{Size: d.Size, Type: strings.ToLower(strings.TrimSpace(d.Type)), Level: d.Level, Gain: d.Gain}

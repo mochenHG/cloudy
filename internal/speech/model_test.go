@@ -19,8 +19,8 @@ import (
 // withModel makes the model files with these contents, served by the
 // sources for the test, and a library, lib, gzipped, served at libURL.
 func withModel(t *testing.T, files map[string][]byte, libURL string, sources ...func(modelFile) string) {
-	oldFiles, oldSources, oldNatives, oldURL := modelFiles, modelSources, natives, nativeURL
-	t.Cleanup(func() { modelFiles, modelSources, natives, nativeURL = oldFiles, oldSources, oldNatives, oldURL })
+	oldFiles, oldSources, oldNatives, oldURL := modelFiles, modelSources, natives, nativeSources
+	t.Cleanup(func() { modelFiles, modelSources, natives, nativeSources = oldFiles, oldSources, oldNatives, oldURL })
 	modelFiles = nil
 	for _, path := range []string{"model.onnx", "tokenizer/vocab.json"} {
 		sum := sha256.Sum256(files[path])
@@ -31,7 +31,7 @@ func withModel(t *testing.T, files map[string][]byte, libURL string, sources ...
 	sum, gzSum := sha256.Sum256(lib), sha256.Sum256(gz)
 	f := nativeFile{name: "libtest.dylib", asset: "lib.gz", size: int64(len(lib)), gzSize: int64(len(gz)), sha256: hex.EncodeToString(sum[:]), gzSHA256: hex.EncodeToString(gzSum[:])}
 	natives = func() []nativeFile { return []nativeFile{f} }
-	nativeURL = func(nativeFile) string { return libURL }
+	nativeSources = []func(nativeFile) string{func(nativeFile) string { return libURL }}
 }
 
 var lib = bytes.Repeat([]byte("\xcf\xfa\xed\xfe code "), 1000)
@@ -125,5 +125,37 @@ func TestChangedLibraryRefused(t *testing.T) {
 	os.WriteFile(path, append(lib, "evil"...), 0o755)
 	if verifyLibs(dir) == nil {
 		t.Error("a changed library loads")
+	}
+}
+
+// A source of the libraries that is gone, or answers and then stops
+// sending, gives way to the next.
+func TestNativeSourcesFallBack(t *testing.T) {
+	files := map[string][]byte{"model.onnx": []byte("onnx"), "tokenizer/vocab.json": []byte(`{}`)}
+	good := serve(t, func(w http.ResponseWriter, r *http.Request) { w.Write(gzipped(lib)) })(modelFile{from: "lib.gz"})
+	gone := serve(t, func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })(modelFile{from: "lib.gz"})
+	hang := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100000")
+		w.Write([]byte("x"))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	})(modelFile{from: "lib.gz"})
+	withModel(t, files, good, serve(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write(files[strings.TrimPrefix(r.URL.Path, "/repo/")])
+	}))
+	nativeSources = []func(nativeFile) string{
+		func(nativeFile) string { return gone },
+		func(nativeFile) string { return hang },
+		func(nativeFile) string { return good },
+	}
+	old := stallTimeout
+	stallTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { stallTimeout = old })
+	root := t.TempDir()
+	if err := Download(context.Background(), root, func(int64, int64) {}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(libDir(root), "libtest.dylib")); !bytes.Equal(got, lib) {
+		t.Fatal("library not downloaded from the good source")
 	}
 }

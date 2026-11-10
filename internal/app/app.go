@@ -314,6 +314,7 @@ func Run() error {
 		a.pl.SetEffects(a.currentEffects(), false)
 		a.pl.Quality = func() string { return a.settings.Quality }
 		a.pl.Normalize = func() bool { return a.settings.Normalize }
+		a.pl.Crossfade = a.crossfade
 		a.pl.Cache = newSongCache(a.settings.CacheMB)
 		a.pl.Listened = func(t netease.Track, played time.Duration, ended bool) {
 			a.listened(t, played, ended)

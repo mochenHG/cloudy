@@ -54,6 +54,17 @@ func (f *fader) attach(out *audio.Player, level float64) {
 	f.apply(time.Now())
 }
 
+// detach lets go of the player faded, where its level is now, and returns
+// that level and the gain, for another fader to go on from.
+func (f *fader) detach() (level, gain float64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.gen++
+	level = f.level(time.Now())
+	f.out, f.from, f.to, f.dur = nil, 1, 1, 0
+	return level, f.gain
+}
+
 // setGain changes the volume and gain, at once.
 func (f *fader) setGain(g float64) {
 	f.mu.Lock()

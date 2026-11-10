@@ -122,6 +122,10 @@ type settings struct {
 	// Normalize evens out the loudness of tracks, by what NetEase
 	// measured of each.
 	Normalize bool `json:"normalize"`
+	// Crossfade fades each song out as it ends into the next fading in,
+	// over CrossfadeSec seconds (0 for 3).
+	Crossfade    bool `json:"crossfade,omitempty"`
+	CrossfadeSec int  `json:"crossfadeSec,omitempty"`
 	// HotComments shows a song's hot comments in its quiet parts, in
 	// place of the lyrics (quietComment): the listener turns it on.
 	HotComments bool `json:"hotComments"`

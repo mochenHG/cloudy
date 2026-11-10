@@ -384,6 +384,9 @@ func (a *app) finishDownload(item download.Item, err error) {
 		}
 	case errors.Is(err, context.Canceled):
 		a.toast = "已取消下载"
+	case errors.Is(err, netease.ErrNoCopyright):
+		a.toast = "这首歌暂无版权，不能下载"
+		a.dl.queue.fail(tr, "暂无版权")
 	case errors.Is(err, netease.ErrUnavailable):
 		a.toast = "这首歌暂时不能下载"
 		a.dl.queue.fail(tr, "没有下载权限")

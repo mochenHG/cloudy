@@ -93,6 +93,16 @@ type Player struct {
 	retryTimer *time.Timer
 	retries    int // reconnections for the current selection
 
+	// Crossfade, if set, is how long songs fade into each other as one
+	// ends: 0 for not at all.
+	Crossfade func() time.Duration
+
+	pre        *preload      // the next track, loading as this one nears its end
+	watchDone  chan struct{} // closed to stop watching the track's end
+	endFade    int           // the load whose end fades, once
+	fadeInNext time.Duration // how long the next track loaded fades in
+	tail       *tail         // the track before, fading out under this one
+
 	lyrics       []lyrics.Line
 	lyricsLoaded bool
 
@@ -548,6 +558,7 @@ func (p *Player) TogglePlay() {
 	out := p.out
 	if p.playing {
 		p.playing = false
+		p.cutTail()
 		p.fade.fade(0, fadeOut, func() {
 			p.post(func() {
 				if p.out == out && !p.playing {
@@ -582,6 +593,13 @@ func (p *Player) Seek(t time.Duration) {
 	if p.out == nil {
 		p.pending = t
 		return
+	}
+	// Back from where this track was fading out at its end: it plays on.
+	if p.endFade == p.gen {
+		p.endFade, p.fadeInNext = 0, 0
+		if p.playing {
+			p.fade.fade(1, fadeIn, nil)
+		}
 	}
 	out := p.out
 	// Paused, it jumps at once; but a seek on its way paused it only for
@@ -680,6 +698,11 @@ func (p *Player) stop() {
 		p.cancelLoad()
 		p.cancelLoad = nil
 	}
+	if p.watchDone != nil {
+		close(p.watchDone)
+		p.watchDone = nil
+	}
+	p.cutTail()
 	if out := p.out; out != nil {
 		// Paused first, it fades out over a few milliseconds, rather than
 		// stopping with a click.
@@ -718,10 +741,21 @@ func (p *Player) loadAttempt(at, skipped int, play bool, from time.Duration, dir
 	if at >= 0 && at < len(p.order) && p.track != nil && p.queue[p.order[at]].ID != p.track.ID {
 		p.tellListened(false)
 	}
+	level := p.level()
+	pre := p.takePreload(at, level, from, retries)
+	crossIn := p.fadeInNext
+	p.fadeInNext = 0
 	p.stop()
 	p.retries = retries
 	gen := p.gen
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	if pre != nil {
+		stopLoad := cancel
+		cancel = func() {
+			pre.cancel()
+			stopLoad()
+		}
+	}
 	p.cancelLoad = cancel
 	p.at = at
 	t := p.queue[p.order[at]]
@@ -732,51 +766,83 @@ func (p *Player) loadAttempt(at, skipped int, play bool, from time.Duration, dir
 	p.pending = from
 	p.announce(&t, nil)
 	p.refill()
-	level := "exhigh"
-	if p.Quality != nil {
-		level = p.Quality()
-	}
 
-	go func() {
-		cover, err := netease.Fetch(netease.Sized(t.Album.PicURL, 600))
-		if err == nil {
+	// What the preload has in already shows at once.
+	if pre != nil {
+		select {
+		case <-pre.words:
+			p.lyrics, p.lyricsLoaded = pre.lines, true
+		default:
+		}
+		select {
+		case <-pre.art:
+			if pre.coverErr == nil {
+				p.announce(&t, pre.cover)
+			}
+		default:
+		}
+	}
+	if p.coverOf != t.ID || p.cover == nil {
+		go func() {
+			var cover []byte
+			var err error
+			if pre != nil {
+				<-pre.art
+				cover, err = pre.cover, pre.coverErr
+			} else {
+				cover, err = fetchCover(t)
+			}
+			if err == nil {
+				p.post(func() {
+					if gen == p.gen {
+						p.announce(&t, cover)
+						if p.Changed != nil {
+							p.Changed()
+						}
+					}
+				})
+			}
+		}()
+	}
+	if !p.lyricsLoaded {
+		go func() {
+			var lines []lyrics.Line
+			if pre != nil {
+				<-pre.words
+				lines = pre.lines
+			} else {
+				lines = fetchLyrics(t)
+			}
 			p.post(func() {
 				if gen == p.gen {
-					p.announce(&t, cover)
-					if p.Changed != nil {
-						p.Changed()
-					}
+					p.lyrics = lines
+					p.lyricsLoaded = true
 				}
 			})
-		}
-	}()
+		}()
+	}
 
-	// A downloaded song is still NetEase's, whose lyrics it fetches; a
-	// file put in the folder by hand has only the .lrc beside it, if any,
-	// which is also what a downloaded song falls back to offline.
+	// A preload with its audio in plays now, with no wait for a post:
+	// the end of one track runs into the start of the next.
+	if pre != nil && pre.ready() {
+		p.opened(gen, t, pre.info, pre.s, pre.err, skipped, direction, crossIn)
+		return
+	}
 	go func() {
-		var lines []lyrics.Line
-		var err error = errNoLyrics
-		if t.ID > 0 {
-			var lrc, trans, yrc string
-			if lrc, trans, yrc, err = lyricsOf(t.ID); err == nil {
-				lines = lyrics.Build(lrc, trans, yrc)
+		var info *netease.Stream
+		var s stream
+		var err error
+		if pre != nil {
+			select {
+			case <-pre.audio:
+				info, s, err = pre.info, pre.s, pre.err
+			case <-ctx.Done():
+				pre.discard()
+				err = ctx.Err()
 			}
+		} else {
+			info, s, err = p.openContext(ctx, t, level)
 		}
-		if err != nil && t.LocalPath != "" {
-			if b, e := os.ReadFile(strings.TrimSuffix(t.LocalPath, filepath.Ext(t.LocalPath)) + ".lrc"); e == nil {
-				lines = lyrics.Build(string(b), "", "")
-			}
-		}
-		p.post(func() {
-			if gen == p.gen {
-				p.lyrics = lines
-				p.lyricsLoaded = true
-			}
-		})
-	}()
-	go func() {
-		info, s, err := p.openContext(ctx, t, level)
 		p.post(func() {
 			if gen != p.gen {
 				if s != nil {
@@ -784,67 +850,83 @@ func (p *Player) loadAttempt(at, skipped int, play bool, from time.Duration, dir
 				}
 				return
 			}
-			p.cancelLoad = nil
-			cancel()
-			p.loading = false
-			if err != nil {
-				if p.retryLoad(skipped, direction, err) {
-					return
-				}
-				p.err = err.Error()
-				switch {
-				case !errors.Is(err, netease.ErrUnavailable):
-				case t.ProgramID != 0:
-					p.err = "这期节目需要购买才能收听"
-				default:
-					p.err = "这首歌需要 VIP 才能播放"
-				}
-				// Only an unavailable song is skipped. A failed connection or
-				// cache must not send the listener through the whole queue.
-				if errors.Is(err, netease.ErrUnavailable) && skipped+1 < len(p.order) {
-					next := (p.at + direction + len(p.order)) % len(p.order)
-					if direction > 0 && next == 0 && p.feed != nil {
-						p.awaitFeed()
-						return
-					}
-					p.loadSkipping(next, skipped+1, p.playing, 0, direction)
-				} else {
-					p.playing = false
-					p.sync()
-				}
-				return
-			}
-			checked := &checkedStream{stream: s}
-			p.stream, p.info = checked, info
-			p.gain = normGain(info)
-			p.stretcher = newStretch(checked, p.speedOf(&t))
-			p.curSpeed = p.stretcher.speed
-			p.out = audio.NewPlayer(newShaper(p.stretcher, &p.fx, &p.fxGlide))
-			// From its middle, as a session picked up again, it fades in.
-			level := 1.0
-			if p.pending > 0 {
-				level = 0
-			}
-			p.fade.attach(p.out, level)
-			p.applyGain()
-			p.out.OnEnd(func() {
-				p.post(func() {
-					if gen == p.gen {
-						p.finish(checked)
-					}
-				})
-			})
-			if p.pending > 0 {
-				p.out.Seek(p.heard(p.pending))
-				p.pending = 0
-			}
-			if p.playing {
-				p.out.Play()
-				p.fade.fade(1, fadeIn, nil)
-			}
-			p.sync()
+			p.opened(gen, t, info, s, err, skipped, direction, crossIn)
 		})
 	}()
+}
+
+// opened plays track t, its audio opened, or tells why it cannot: the
+// load of gen, which is the current one.
+func (p *Player) opened(gen int, t netease.Track, info *netease.Stream, s stream, err error, skipped, direction int, crossIn time.Duration) {
+	if p.cancelLoad != nil {
+		p.cancelLoad()
+		p.cancelLoad = nil
+	}
+	p.loading = false
+	if err != nil {
+		if p.retryLoad(skipped, direction, err) {
+			return
+		}
+		p.err = err.Error()
+		switch {
+		case !errors.Is(err, netease.ErrUnavailable):
+		case t.ProgramID != 0:
+			p.err = "这期节目需要购买才能收听"
+		case errors.Is(err, netease.ErrNoCopyright):
+			p.err = "这首歌暂无版权"
+		default:
+			p.err = "这首歌需要 VIP 才能播放"
+		}
+		// Only an unavailable song is skipped. A failed connection or
+		// cache must not send the listener through the whole queue.
+		if errors.Is(err, netease.ErrUnavailable) && skipped+1 < len(p.order) {
+			next := (p.at + direction + len(p.order)) % len(p.order)
+			if direction > 0 && next == 0 && p.feed != nil {
+				p.awaitFeed()
+				return
+			}
+			p.loadSkipping(next, skipped+1, p.playing, 0, direction)
+		} else {
+			p.playing = false
+			p.sync()
+		}
+		return
+	}
+	checked := &checkedStream{stream: s}
+	p.stream, p.info = checked, info
+	p.gain = normGain(info)
+	p.stretcher = newStretch(checked, p.speedOf(&t))
+	p.curSpeed = p.stretcher.speed
+	p.out = audio.NewPlayer(newShaper(p.stretcher, &p.fx, &p.fxGlide))
+	// From its middle, as a session picked up again, it fades in, as it
+	// does fading into another.
+	level := 1.0
+	if p.pending > 0 || crossIn > 0 {
+		level = 0
+	}
+	if crossIn <= 0 {
+		crossIn = fadeIn
+	}
+	p.fade.attach(p.out, level)
+	p.applyGain()
+	p.out.OnEnd(func() {
+		p.post(func() {
+			if gen == p.gen {
+				p.finish(checked)
+			}
+		})
+	})
+	if p.pending > 0 {
+		p.out.Seek(p.heard(p.pending))
+		p.pending = 0
+	}
+	if p.playing {
+		p.out.Play()
+		p.fade.fade(1, crossIn, nil)
+	}
+	p.watchDone = make(chan struct{})
+	p.watchEnd(gen, p.out, time.Duration(float64(t.Length())/p.curSpeed), p.watchDone)
+	p.sync()
 }
 
 // open opens track t's audio at level: kept in the cache, or else

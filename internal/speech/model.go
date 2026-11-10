@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"time"
 )
 
 // A file of the model, at its path in the model's directory.
@@ -65,8 +66,14 @@ var natives = func() []nativeFile {
 	return append(slices.Clone(libFiles[platform()]), vadFile)
 }
 
-// nativeURL is where a native file downloads from; tests replace it.
-var nativeURL = func(f nativeFile) string { return libBase + f.asset }
+// nativeSources are where a native file downloads from: the release
+// itself, then the mirrors of GitHub that listeners in China reach, as
+// the app's updates do. Tests replace them.
+var nativeSources = []func(f nativeFile) string{
+	func(f nativeFile) string { return libBase + f.asset },
+	func(f nativeFile) string { return "https://gh-proxy.com/" + libBase + f.asset },
+	func(f nativeFile) string { return "https://ghfast.top/" + libBase + f.asset },
+}
 
 // ModelSize is how many bytes Download downloads: the model, and the
 // libraries that run it.
@@ -124,7 +131,13 @@ func Download(ctx context.Context, root string, progress func(done, total int64)
 			continue
 		}
 		gz := modelFile{path: f.name + ".gz", size: f.gzSize, sha256: f.gzSHA256}
-		err := fetch(ctx, nativeURL(f), path+".gz", gz, func(n int64) { progress(before+n, total) })
+		var err error
+		for _, src := range nativeSources {
+			err = fetch(ctx, src(f), path+".gz", gz, func(n int64) { progress(before+n, total) })
+			if err == nil || ctx.Err() != nil {
+				break
+			}
+		}
 		if err == nil {
 			err = gunzip(path+".gz", path, f)
 		}
@@ -160,6 +173,10 @@ func Download(ctx context.Context, root string, progress func(done, total int64)
 	}
 	return nil
 }
+
+// stallTimeout is how long a download waits for a source to answer, or to
+// send more.
+var stallTimeout = 20 * time.Second
 
 // errDigest says a file came in other than the model's.
 var errDigest = errors.New("speech: the download does not match the model")
@@ -204,6 +221,12 @@ func fetch(ctx context.Context, url, path string, f modelFile, got func(int64)) 
 // get appends what url has from have on to out, which has have bytes of
 // its size, and adds it to h.
 func get(ctx context.Context, url string, out *os.File, h hash.Hash, have, size int64, got func(int64)) error {
+	// A source that stops sending gives way to the next, rather than
+	// keeping the download at where it stopped.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stalled := time.AfterFunc(stallTimeout, cancel)
+	defer stalled.Stop()
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return err
@@ -237,6 +260,7 @@ func get(ctx context.Context, url string, out *os.File, h hash.Hash, have, size 
 	for have < size {
 		n, err := res.Body.Read(buf)
 		if n > 0 {
+			stalled.Reset(stallTimeout)
 			if _, err := out.Write(buf[:n]); err != nil {
 				return err
 			}

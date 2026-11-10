@@ -546,6 +546,25 @@ func (a *app) settingsPlaybackPage(k *settingsKit) {
 		k.row("音量均衡", "按网易云测得的响度调整音量，让每首歌听起来一样响", func() {
 			k.toggle("normalize", "音量均衡", &s.Normalize, false, func() { a.pl.SetVolume(a.volume) })
 		})
+		k.row("淡入淡出", "每首歌快结束时渐渐变轻，下一首渐渐响起，两首歌衔接在一起", func() {
+			k.toggle("crossfade", "淡入淡出", &s.Crossfade, false, nil)
+		})
+		if s.Crossfade {
+			k.row("淡入淡出时长", "两首歌重叠的时间", func() {
+				labels := make([]string, len(crossfadeChoices))
+				chosen := ""
+				for i, n := range crossfadeChoices {
+					labels[i] = fmt.Sprintf("%d 秒", n)
+					if n == a.crossfadeSec() {
+						chosen = labels[i]
+					}
+				}
+				k.choose("crossfade-sec", "淡入淡出时长", chosen, labels, func(i int) {
+					s.CrossfadeSec = crossfadeChoices[i]
+					a.changed()
+				})
+			})
+		}
 		desc := "均衡器与预设音效，对所有歌曲生效"
 		if s.Effects.On {
 			desc = "当前：" + a.presetLabel()
