@@ -14,8 +14,9 @@ import (
 // the lyrics dim, and one of its hot comments (热评) rises in where they
 // were, down the lyrics pane or in the middle of the stage, with who wrote
 // it and how many liked it, giving way as the singing comes back. A long quiet shows a few, one after another; a song without
-// lyrics shows them all along. A click on one opens the comments. The
-// listener turns them on (settings.HotComments).
+// lyrics shows them all along, and so does every song in 热评模式 all
+// along (settings.HotAll), as NetEase’s 心动乐评 does. A click on one opens
+// the comments. The listener turns them on (settings.HotComments).
 
 const (
 	quietLeast = 8 * time.Second         // the shortest quiet a comment shows in
@@ -29,7 +30,8 @@ const (
 // comment shown in one, kept as it fades away.
 type quietState struct {
 	track  int64
-	lines  int // how many lines they were found among
+	lines  int  // how many lines they were found among
+	all    bool // the whole song is one quiet (settings.HotAll)
 	quiets []lyrics.Quiet
 	cm     *netease.Comment
 }
@@ -41,10 +43,11 @@ func (a *app) quietComment(tr *netease.Track, lines []lyrics.Line, loaded bool, 
 		return nil, 0
 	}
 	qs := &a.quiet
-	if qs.track != tr.ID || qs.lines != len(lines) || qs.quiets == nil {
-		qs.track, qs.lines = tr.ID, len(lines)
+	all := a.settings.HotAll
+	if qs.track != tr.ID || qs.lines != len(lines) || qs.all != all || qs.quiets == nil {
+		qs.track, qs.lines, qs.all = tr.ID, len(lines), all
 		qs.quiets = lyrics.Quiets(lines, tr.Length(), quietLeast)
-		if len(lines) == 0 && loaded && tr.Length() >= quietLeast {
+		if (all || len(lines) == 0 && loaded) && tr.Length() >= quietLeast {
 			qs.quiets = []lyrics.Quiet{{From: 0, To: tr.Length()}}
 		}
 		if qs.quiets == nil {

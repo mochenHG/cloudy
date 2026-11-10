@@ -528,7 +528,7 @@ func (a *app) paneTab(c *ui.Context, i int, label string) ui.Element {
 // their tools to show with them.
 func (a *app) lyricsPane(c *ui.Context, tr *netease.Track, h float32) bool {
 	pl := a.pl
-	lines, loaded := pl.Lyrics()
+	lines, loaded := a.shownLyrics()
 	if len(lines) == 0 {
 		col := ui.Column(c).Grow(1)
 		if loaded {
@@ -591,6 +591,7 @@ func (a *app) timedLines(c *ui.Context, scroll ui.Element, lines []lyrics.Line, 
 	scroll.Children(func() {
 		ui.Column(c).Gap(6).Translate(0, -lag).Children(func() {
 			for i, l := range lines {
+				l = a.npLine(l)
 				line := ui.ButtonBase(c.Key(i)).Column().AlignItems(ui.Start).Padding(10, 12).Radius(14).Gap(6).FocusRing(false).Label(l.Text)
 				on := i == cur
 				alpha := float32(0.28)

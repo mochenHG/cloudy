@@ -101,6 +101,10 @@ func (a *app) pageArt() string {
 		}
 	case pageDownloads:
 		return a.downloadArtURL()
+	case pageStyle:
+		if url := styleCover(a.style.songs.Songs); url != "" {
+			return url
+		}
 	default:
 		return ""
 	}

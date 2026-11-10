@@ -113,6 +113,66 @@ func ClearSession() {
 	deleteSession()
 }
 
+// ErrBadCookie is ImportCookie's error for text that holds no MUSIC_U, or
+// one NetEase no longer takes.
+var ErrBadCookie = errors.New("netease: cookie holds no live session")
+
+// parseCookie finds the session cookies in text pasted by the listener:
+// a Cookie header ("MUSIC_U=…; __csrf=…; …", with or without "Cookie:"),
+// or MUSIC_U's value alone. Cookies other than the session's are left out.
+func parseCookie(text string) []*http.Cookie {
+	text = strings.TrimSpace(text)
+	if name, rest, ok := strings.Cut(text, ":"); ok && strings.EqualFold(strings.TrimSpace(name), "cookie") {
+		text = strings.TrimSpace(rest)
+	}
+	text = strings.Trim(text, "\"'")
+	if !strings.Contains(text, "=") {
+		if text == "" || strings.ContainsAny(text, "; \t\r\n") {
+			return nil
+		}
+		return []*http.Cookie{{Name: "MUSIC_U", Value: text, Path: "/"}}
+	}
+	var cookies []*http.Cookie
+	music := false
+	for _, part := range strings.FieldsFunc(text, func(r rune) bool { return r == ';' || r == '\n' || r == '\r' }) {
+		name, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+		name, value = strings.TrimSpace(name), strings.Trim(strings.TrimSpace(value), "\"")
+		if !ok || value == "" || (name != "MUSIC_U" && name != "__csrf") {
+			continue
+		}
+		music = music || name == "MUSIC_U"
+		cookies = append(cookies, &http.Cookie{Name: name, Value: value, Path: "/"})
+	}
+	if !music {
+		return nil
+	}
+	return cookies
+}
+
+// ImportCookie signs in with a session cookie copied from a browser signed
+// in at music.163.com, for listeners with no phone app to scan a QR code
+// with. It keeps the session as a QR login does and returns whose it is;
+// a cookie NetEase does not take leaves nobody signed in, ErrBadCookie.
+func ImportCookie(text string) (*Profile, error) {
+	cookies := parseCookie(text)
+	if cookies == nil {
+		return nil, ErrBadCookie
+	}
+	httpClient.Jar.SetCookies(siteURL, cookies)
+	prof, err := Account()
+	if err != nil || prof == nil {
+		ClearSession()
+		if err == nil {
+			err = ErrBadCookie
+		}
+		return nil, err
+	}
+	if err := SaveSession(); err != nil {
+		return prof, err
+	}
+	return prof, nil
+}
+
 type Profile struct {
 	UserID    int64  `json:"userId"`
 	Nickname  string `json:"nickname"`

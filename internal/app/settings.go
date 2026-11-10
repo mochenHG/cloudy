@@ -90,6 +90,15 @@ type settings struct {
 	// DeskWords lights the line sung word by word, as it is sung; off, the
 	// whole line is lit at once.
 	DeskWords bool `json:"deskWords"`
+	// NpWholeLines lights the line sung in Now Playing whole, at once,
+	// rather than word by word as it is sung.
+	NpWholeLines bool `json:"npWholeLines,omitempty"`
+	// HideCredits leaves the lines naming who made a song, as 作词 and
+	// 作曲, out of the lyrics shown.
+	HideCredits bool `json:"hideCredits,omitempty"`
+	// UIZoom is how much larger than as designed the window shows
+	// everything: 0 for 1.
+	UIZoom float64 `json:"uiZoom,omitempty"`
 	// TaskbarProgress shows how far the song has played on the window's
 	// taskbar button.
 	TaskbarProgress bool `json:"taskbarProgress,omitempty"`
@@ -116,6 +125,9 @@ type settings struct {
 	// HotComments shows a song's hot comments in its quiet parts, in
 	// place of the lyrics (quietComment): the listener turns it on.
 	HotComments bool `json:"hotComments"`
+	// HotAll shows the hot comments all through the song, in place of
+	// the lyrics, as NetEase’s 心动乐评 does, not only in its quiet parts.
+	HotAll bool `json:"hotAll,omitempty"`
 	// Fog fills Now Playing's backdrop with fog of the cover's color,
 	// rising and swelling with the bass: an experiment the listener turns
 	// on.

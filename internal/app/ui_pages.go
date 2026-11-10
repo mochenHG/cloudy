@@ -67,6 +67,7 @@ func (a *app) homePage(c *ui.Context) {
 			a.section(c, "今日为你推荐")
 			a.recommendedGrid(c)
 		}
+		a.radarSection(c)
 
 		a.section(c, "官方榜单")
 		official := a.charts[:min(4, len(a.charts))]

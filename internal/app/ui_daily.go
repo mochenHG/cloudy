@@ -161,11 +161,55 @@ func recordOut(out float32) float32 { return 30 + 46*out }
 // dailyPlaying reports whether the day's songs are what plays, and whether
 // they play now rather than paused.
 func (a *app) dailyPlaying() (ours, playing bool) {
-	q, cur := a.pl.Queue(), a.pl.Current()
-	if cur == nil || len(q) != len(a.daily) || len(q) == 0 || q[0].ID != a.daily[0].ID || q[len(q)-1].ID != a.daily[len(q)-1].ID {
+	if !a.queueIs(a.daily) {
 		return false, false
 	}
 	return true, a.pl.Playing()
+}
+
+// queueIs reports whether songs are what the player plays from.
+func (a *app) queueIs(songs []netease.Track) bool {
+	q, cur := a.pl.Queue(), a.pl.Current()
+	return cur != nil && len(q) == len(songs) && len(q) > 0 && q[0].ID == songs[0].ID && q[len(q)-1].ID == songs[len(q)-1].ID
+}
+
+// pickMark is what a song's row on the daily and style cards shows before
+// its name, in a box size across: its number, or a play button under the
+// pointer; on the song that plays, a round button lit up, its bars moving
+// with the music as it plays, which turn to pause under the pointer, or to
+// play when paused. The row's click is the button's.
+func (a *app) pickMark(c *ui.Context, num string, numColor ui.Color, size float32, hovered, current, playing bool) {
+	box := ui.Box(c).Size(size, size).Shrink(0).Center().Radius(999)
+	on := box.AnimateTo("on", b2f(current), ui.Snappy)
+	if on > 0.005 {
+		lit := float32(0.2)
+		if hovered {
+			lit = 0.3
+		}
+		box.Background(white.Alpha(lit * on))
+		box.AnimatePose(ui.Pose{Scale: 0.7 + 0.3*on}, ui.Snappy)
+	}
+	icon := size * 0.42
+	box.Children(func() {
+		switch {
+		case current && playing && !hovered:
+			ui.Box(c).Size(size*0.48, size*0.42).Draw(func(p *ui.Painter, r ui.Rect) {
+				lv, live := a.pl.Levels()
+				a.pickBars.step(p.Now(), lv, live)
+				drawBars(p, r, &a.pickBars, 3, white, 2)
+				if live || a.pickBars.group(0, player.Bands) > 0.01 {
+					p.AnimationFrameRate(dailyRate)
+				}
+			})
+		case current && playing:
+			ui.Icon(c, iconPause).Size(icon, icon)
+		case current || hovered:
+			// A play icon sits a little right of its middle, as it looks.
+			ui.Icon(c, iconPlay).Size(icon, icon).Margin(0, 0, 0, 1)
+		default:
+			ui.Text(c, num).FontSize(12).FontWeight(700).FontFeatures("tnum").TextColor(numColor)
+		}
+	})
 }
 
 // dailyColors returns the card's colors for the day's first cover: a deep
@@ -349,6 +393,7 @@ func (a *app) dailyPlayButton(c *ui.Context, songs []netease.Track, ours, playin
 // its bars; each plays the day's songs from it.
 func (a *app) dailyPicks(c *ui.Context, songs []netease.Track, ours bool) {
 	cur := a.pl.Current()
+	playing := a.pl.Playing()
 	ui.Column(c.Key("picks")).Width(236).Shrink(0).Gap(2).Children(func() {
 		for i := range min(3, len(songs)) {
 			tr := &songs[i]
@@ -360,21 +405,22 @@ func (a *app) dailyPicks(c *ui.Context, songs []netease.Track, ours bool) {
 			}
 			row.Background(row.AnimateColor("bg", bg, ui.Animation{Duration: 120 * time.Millisecond}))
 			current := ours && cur != nil && cur.ID == tr.ID
+			if current && playing {
+				row.Label("暂停 " + tr.Name)
+			}
 			row.Children(func() {
-				ui.Box(c).Width(18).Center().Children(func() {
-					if current {
-						ui.Icon(c, iconPlay).Size(11, 11).TextColor(white)
-					} else {
-						ui.Textf(c, "%02d", i+1).FontSize(12).FontWeight(700).FontFeatures("tnum").TextColor(white.Alpha(0.45))
-					}
-				})
+				a.pickMark(c, fmt.Sprintf("%02d", i+1), white.Alpha(0.45), 24, row.Hovered(), current, playing)
 				ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(1).Children(func() {
 					ui.Text(c, tr.Name).FontSize(13).FontWeight(600).MaxLines(1)
 					a.artistLinks(c, tr, white.Alpha(0.6), white).FontSize(11.5).MaxLines(1)
 				})
 			})
 			if row.Clicked() {
-				a.pl.PlayQueue(songs, i)
+				if current {
+					a.pl.TogglePlay()
+				} else {
+					a.pl.PlayQueue(songs, i)
+				}
 			}
 		}
 	})

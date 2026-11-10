@@ -298,6 +298,20 @@ func Charts() ([]Playlist, error) {
 // playlist; NetEase itself may still cap a list below it.
 const playlistTrackLimit = 10000
 
+// PlaylistSummary returns a playlist without its tracks: its name, cover
+// and who made it.
+func PlaylistSummary(id int64) (*Playlist, error) {
+	var res struct {
+		Playlist Playlist `json:"playlist"`
+	}
+	q := url.Values{"id": {strconv.FormatInt(id, 10)}, "n": {"0"}}
+	if err := get("/api/v6/playlist/detail", q, &res); err != nil {
+		return nil, err
+	}
+	res.Playlist.Tracks = nil
+	return &res.Playlist, nil
+}
+
 // PlaylistDetail returns a playlist with up to playlistTrackLimit of its
 // tracks.
 func PlaylistDetail(id int64) (*Playlist, error) {

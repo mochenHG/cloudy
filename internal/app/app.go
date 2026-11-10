@@ -82,6 +82,7 @@ type app struct {
 	daily             []netease.Track
 	dailySpin         spinState // the record on the daily card
 	dailyBars         barState  // the bars on its play button
+	pickBars          barState  // the bars by the song playing on it, or on the style card
 	featured          []netease.Playlist
 	playlistFilter    int
 	playlistPill      ui.Rect
@@ -209,6 +210,7 @@ type app struct {
 
 	settings     settings
 	settingsView settingsView    // the settings panel
+	shownLines   shownCache      // the lyrics shown, without credits if hidden
 	update       updateState     // the update pane, and the update it found
 	cacheUsed    int64           // the bytes the song cache takes, -1 until measured
 	updates      bool            // the update plugin is used (useUpdater)
@@ -224,6 +226,7 @@ type app struct {
 	sessionDue   bool   // a save of the session is due
 
 	style      styleState    // the day's songs in the styles picked
+	radar      radarState    // NetEase's radars on the home page
 	progressAt progressShown // what the taskbar button last showed of the song
 }
 

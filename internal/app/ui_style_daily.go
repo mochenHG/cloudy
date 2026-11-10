@@ -12,7 +12,7 @@ import (
 )
 
 // The day's songs in the styles the listener picked, the official client's
-// 风格推荐: a card beside 私人雷达 on the home page, opening a page of the
+// 风格推荐: the first card of the day's playlists on the home page, opening a page of the
 // songs, whose styles a dialog changes.
 
 // styleState is the day's style songs, and the dialog that picks their
@@ -95,39 +95,224 @@ func (a *app) styleCardShown() bool {
 }
 
 // recommendedGrid is the day's playlists picked for the listener, with the
-// style songs' card just after 私人雷达, or first.
+// style songs' card first.
 func (a *app) recommendedGrid(c *ui.Context) {
 	cols := a.columns(c, 168)
+	cell := a.gridCell(c, cols)
 	style := a.styleCardShown()
 	n := cols * 2
 	if style {
-		n--
+		n -= 2 // its card is two wide
 	}
-	recs := a.recPlaylists[:min(len(a.recPlaylists), n)]
-	after := -1
-	if style {
-		after = slices.IndexFunc(recs, func(pl netease.Playlist) bool { return pl.Name == "私人雷达" })
-	}
+	// 私人雷达 shows in the radars' section, under this one.
+	recs := slices.DeleteFunc(slices.Clone(a.recPlaylists), func(pl netease.Playlist) bool { return isRadar(pl.ID) })
+	recs = recs[:min(len(recs), n)]
 	ui.Grid(c).Columns(cols).GapX(20).GapY(28).Children(func() {
-		if style && after < 0 {
-			a.styleCard(c.Key("style-songs"))
+		if style {
+			a.styleCard(c.Key("style-songs"), cell)
 		}
 		for i := range recs {
 			a.playlistCard(c.Key(recs[i].ID), &recs[i])
-			if style && i == after {
-				a.styleCard(c.Key("style-songs"))
-			}
 		}
 	})
 }
 
-// styleCard is the style songs' card: it opens their page.
-func (a *app) styleCard(c *ui.Context) {
+// gridCell is how wide a card is in a grid of cols on the page.
+func (a *app) gridCell(c *ui.Context, cols int) float32 {
+	w, _ := c.Size()
+	return (w - a.sideWidth(w) - 2*pagePad - float32(cols-1)*20) / float32(cols)
+}
+
+// The style card's measures.
+const (
+	stylePad        = 18
+	styleRadius     = 20
+	styleSongRow    = 30
+	styleHead       = 58 // its label and title, over its songs
+	styleRoomy      = 260 // its songs' side this wide has room for how many
+	styleArtists    = 210 // and this wide for their singers
+)
+
+// styleCard is the style songs' card, one card across two of the grid's
+// cells, in the colors of their cover as the daily card is: the cover, the
+// styles and as many of the songs as fit, each of which plays from there.
+// The rest of it opens their page.
+func (a *app) styleCard(c *ui.Context, cell float32) {
 	s := &a.style
-	play := func() { a.playList(s.songs.Songs, false) }
-	if a.coverCard(c, "风格推荐", styleCover(s.songs.Songs), 0, styleNames(s.songs.Picked), play) {
+	songs := s.songs.Songs
+	cover := styleCover(songs)
+	art := a.art.get(netease.Sized(cover, 400), true)
+	// As tall as a row of cards whose names take a line: a grid stretches
+	// it to the row's tallest, never the row to it.
+	tall := cell + 28
+	inner := tall - 2*stylePad
+	// A narrow card gives its songs some of the cover's room.
+	room := 2*cell + 20 - 2*stylePad
+	artSize := min(inner, room*0.42)
+	side := room - artSize - 18
+	card := ui.ButtonBase(c).ColumnSpan(2).MinHeight(tall).Radius(styleRadius).
+		Padding(stylePad, stylePad).Gap(18).FocusRing(false).Label("风格推荐").TextColor(white)
+	hovered := card.Hovered()
+	still := c.Preferences().ReduceMotion
+	deep, rich, glow := dailyColors(art)
+	fade := ui.Animation{Duration: 600 * time.Millisecond}
+	deep, rich, glow = card.AnimateColor("deep", deep, fade), card.AnimateColor("rich", rich, fade), card.AnimateColor("glow", glow, fade)
+	card.Background(deep)
+	// Under the pointer it rises a little and glows in its own colors, and
+	// a sheen sweeps across it once, as on the daily card.
+	lift := card.AnimateTo("lift", b2f(hovered), ui.Snappy)
+	card.Shadow(0, 10+8*lift, 26+16*lift, -12, a.pal.cardShade.Mix(rich.Alpha(0.6), lift))
+	pose := ui.Pose{}
+	switch {
+	case card.Pressed():
+		pose.Scale = 0.99
+	case hovered && !still:
+		pose.Y = -3
+	}
+	card.AnimatePose(pose, ui.Snappy)
+	sweep := float32(0)
+	if hovered && !still {
+		sweep = card.AnimateTo("sweep", 1, ui.Animation{Duration: 1100 * time.Millisecond, Ease: ui.EaseInOut})
+	} else {
+		card.Jump("sweep", 0)
+	}
+	blurred := backdrop(art)
+	ours := a.queueIs(songs)
+	cur := a.pl.Current()
+	playing := a.pl.Playing()
+
+	var artAt ui.Rect
+	artBox := func(size float32) {
+		box := ui.Box(c.Key("art")).Width(size).Height(size).Shrink(0).Radius(14).Shadow(0, 8, 22, -6, ui.RGBA(0, 0, 0, 0.4))
+		artAt = box.Bounds()
+		pose := ui.Pose{}
+		if hovered {
+			pose = ui.Pose{Scale: 1.02}
+		}
+		box.AnimatePose(pose, ui.Snappy)
+		box.Children(func() {
+			a.coverFill(c, cover, 400, 14)
+			a.coverPlayButton(c, hovered, func() { a.playList(songs, false) })
+		})
+	}
+	head := func() {
+		ui.Row(c).Gap(10).AlignItems(ui.Start).Children(func() {
+			ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
+				ui.Row(c).Gap(6).AlignItems(ui.Center).TextColor(white.Alpha(0.72)).Children(func() {
+					ui.Icon(c, iconWand).Size(13, 13)
+					ui.Text(c, "风格推荐").FontSize(12).FontWeight(650).SingleLine().Shrink(0)
+					if side >= styleRoomy {
+						ui.Textf(c, "· 今日 %d 首", len(songs)).FontSize(12).SingleLine().Shrink(1).MinWidth(0)
+					}
+				})
+				title := styleNames(s.songs.Picked)
+				if title == "" {
+					title = "按你选的风格挑选"
+				}
+				ui.Text(c, title).FontSize(20).FontWeight(800).LetterSpacing(-0.4).SingleLine()
+			})
+			change := ui.ButtonBase(c.Key("change")).Height(26).PaddingX(10).Gap(5).Radius(999).AlignItems(ui.Center).Shrink(0).
+				FocusRing(false).Label("换风格")
+			bg := white.Alpha(0.14)
+			if change.Hovered() {
+				bg = white.Alpha(0.24)
+			}
+			change.Background(change.AnimateColor("bg", bg, ui.Animation{Duration: 100 * time.Millisecond}))
+			change.Children(func() {
+				ui.Icon(c, iconWand).Size(12, 12)
+				ui.Text(c, "换风格").FontSize(12).SingleLine()
+			})
+			if change.Clicked() {
+				a.openStylePicker()
+			}
+		})
+	}
+	list := func(room, width float32) {
+		shown := min(len(songs), max(1, int(room/styleSongRow)))
+		ui.Column(c.Key("songs")).Children(func() {
+			for i := range songs[:shown] {
+				tr := &songs[i]
+				current := ours && cur != nil && cur.ID == tr.ID
+				label := "播放 " + tr.Name
+				if current && playing {
+					label = "暂停 " + tr.Name
+				}
+				row := ui.ButtonBase(c.Key(tr.ID)).Height(styleSongRow).Gap(8).PaddingX(6).Margin(0, -6).Radius(8).AlignItems(ui.Center).Justify(ui.Start).
+					FocusRing(false).Label(label)
+				bg := white.Alpha(0)
+				if row.Hovered() {
+					bg = white.Alpha(0.12)
+				}
+				row.Background(row.AnimateColor("bg", bg, ui.Animation{Duration: 120 * time.Millisecond}))
+				row.Children(func() {
+					a.pickMark(c, fmt.Sprint(i+1), white.Alpha(0.5), 22, row.Hovered(), current, playing)
+					ui.Text(c, tr.Name).FontSize(13).FontWeight(600).SingleLine().Shrink(1).MinWidth(0)
+					if width >= styleArtists {
+						ui.Text(c, tr.ArtistNames()).FontSize(12).TextColor(white.Alpha(0.62)).SingleLine().Shrink(1).MinWidth(0).MaxWidth(width * 0.4)
+					}
+				})
+				if row.Clicked() {
+					if current {
+						a.pl.TogglePlay()
+					} else {
+						if a.pl.Shuffle() {
+							a.pl.ToggleShuffle()
+						}
+						a.pl.PlayQueue(songs, i)
+					}
+				}
+			}
+		})
+	}
+
+	card.Draw(func(p *ui.Painter, r ui.Rect) {
+		// The glow is behind the cover.
+		drawStyleBackdrop(p, r, blurred, deep, rich, glow, r.X+stylePad+artSize/2, r.Y+r.H/2, lift, sweep)
+	})
+	card.Children(func() {
+		artBox(artSize)
+		ui.Column(c.Key("side")).Grow(1).Basis(0).MinWidth(0).Height(inner).Gap(8).Children(func() {
+			head()
+			list(inner-styleHead-8, side)
+		})
+	})
+	if card.Clicked() {
+		a.flyFrom(c, cover, artAt, 14)
 		a.open(route{page: pageStyle})
 	}
+}
+
+// drawStyleBackdrop paints the style card in r, as the daily card is
+// painted: a gradient of the cover's colors with the cover blurred faintly
+// through it, deeper at the right, where its songs are, and a glow behind
+// the cover, whose middle is at cx, cy, brighter and wider as lit goes to
+// 1; and, as sweep goes from 0 to 1, a sheen crossing it.
+func drawStyleBackdrop(p *ui.Painter, r ui.Rect, blurred *ui.Bitmap, deep, rich, glow ui.Color, cx, cy, lit, sweep float32) {
+	const angle = 90
+	p.Clip(r, styleRadius, func() {
+		p.FillGradient(r, ui.LinearGradient{Angle: angle + 10, Oklab: true, Stops: []ui.GradientStop{
+			{Color: rich, At: 0}, {Color: deep, At: 0.8},
+		}}, 0)
+		if blurred != nil {
+			p.ImageRegion(blurred, ui.Rect{W: 48, H: 48}, coverRect(r, 48, 48), ui.ImageOptions{Tint: white.Alpha(0.24)})
+		}
+		p.FillGradient(r, ui.LinearGradient{Angle: angle, Stops: []ui.GradientStop{
+			{Color: deep.Alpha(0), At: 0.25}, {Color: deep.Alpha(0.8), At: 1},
+		}}, 0)
+		g := 50 + 20*lit
+		p.Shadow(ui.Rect{X: cx - g, Y: cy - g, W: 2 * g, H: 2 * g}, g, 0, 0, 120+40*lit, 30, glow.Alpha(0.22+0.18*lit))
+		// Light from above, as the pointer comes.
+		p.Shadow(ui.Rect{X: r.X + r.W*0.3, Y: r.Y - 80, W: r.W * 0.4, H: 40}, 20, 0, 0, 120, 0, white.Alpha(0.1*lit))
+		if sweep > 0 && sweep < 1 {
+			at := -0.25 + 1.5*sweep
+			p.FillGradient(r, ui.LinearGradient{Angle: 110, Stops: []ui.GradientStop{
+				{Color: white.Alpha(0), At: clamp01(at - 0.12)},
+				{Color: white.Alpha(0.13 * (1 - sweep*0.5)), At: clamp01(at)},
+				{Color: white.Alpha(0), At: clamp01(at + 0.12)},
+			}}, 0)
+		}
+	})
+	p.Stroke(r, white.Alpha(0.1+0.1*lit), styleRadius, 1)
 }
 
 // stylePage is the day's songs in the styles picked, with a button that

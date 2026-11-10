@@ -1,7 +1,9 @@
 package app
 
 import (
+	"errors"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -21,6 +23,13 @@ type loginState struct {
 	avatar   string
 	err      string
 	finished bool
+
+	// cookie is the other way in, for those with no phone app to scan
+	// with: a session cookie pasted from a browser.
+	cookie     bool
+	cookieText string
+	cookieBusy bool
+	cookieErr  string
 }
 
 // boot signs in with the session in the keychain, if any, then loads the
@@ -56,6 +65,7 @@ func (a *app) signedIn(prof *netease.Profile) {
 	a.uploadsFor(prof)
 	a.mine, a.saved, a.recPlaylists, a.liked = nil, nil, nil, nil
 	a.style = styleState{}
+	a.radar = radarState{open: a.radar.open}
 	a.myAlbums, a.myAlbumsErr, a.myAlbumsBusy = nil, "", false
 	a.cloud = cloudState{}
 	a.likedPrograms, a.askedPrograms = nil, nil
@@ -174,6 +184,10 @@ func (a *app) loginDialog(c *ui.Context) {
 	a.dialog(c, "login", 0.35, &l.open, func(panel ui.Element) {
 		a.pane(panel, 26, false)
 		panel.Width(340).Padding(28, 28, 26, 28).Gap(6).AlignItems(ui.Center)
+		if l.cookie && !l.finished {
+			a.cookieLogin(c, panel)
+			return
+		}
 		title, sub := "扫码登录", "打开网易云音乐 App，扫一扫登录"
 		switch {
 		case l.finished:
@@ -221,7 +235,92 @@ func (a *app) loginDialog(c *ui.Context) {
 			})
 		})
 		ui.Text(c, "登录后，每日推荐与歌单将根据你的口味生成").FontSize(11.5).TextColor(p.faint).Margin(16, 0, 0, 0)
+		if !l.finished && textLink(c.Key("to-cookie"), "没有手机 App？使用 Cookie 登录", p.muted).Clicked() {
+			l.cookie, l.cookieErr = true, ""
+		}
 	})
+}
+
+// cookieLogin is the other face of the login dialog: a field for the
+// MUSIC_U cookie of a browser signed in at music.163.com.
+func (a *app) cookieLogin(c *ui.Context, panel ui.Element) {
+	p := a.pal
+	l := &a.login
+	panel.AlignItems(ui.Stretch)
+	ui.Text(c, "Cookie 登录").FontSize(20).FontWeight(700).TextAlign(ui.Center)
+	ui.Text(c, "在浏览器登录 music.163.com，从开发者工具复制 Cookie 里的 MUSIC_U，粘贴到下面").
+		FontSize(12.5).TextColor(p.muted).LineHeight(1.45).TextAlign(ui.Center).Margin(0, 0, 12, 0)
+	in := ui.TextInput(c.Key("cookie"), &l.cookieText).Placeholder("MUSIC_U=… 或整段 Cookie").Label("Cookie").
+		Password().FontSize(13).AutoFocus().Disabled(l.cookieBusy)
+	if in.Submitted() {
+		a.importCookie()
+	}
+	if l.cookieErr != "" {
+		ui.Text(c, l.cookieErr).FontSize(12).TextColor(dangerColor).LineHeight(1.4).Margin(4, 0, 0, 0)
+	}
+	ui.Text(c, "Cookie 等同于账号密码，不要发给任何人。Cloudy 只把它存在本机的系统凭据里").
+		FontSize(11.5).TextColor(p.faint).LineHeight(1.45).Margin(8, 0, 0, 0)
+	ui.Row(c).Gap(10).AlignItems(ui.Center).Margin(16, 0, 0, 0).Children(func() {
+		if textLink(c.Key("to-qr"), "返回扫码登录", p.muted).Clicked() {
+			l.cookie, l.cookieErr = false, ""
+		}
+		ui.Box(c).Grow(1)
+		label := "登录"
+		if l.cookieBusy {
+			label = "正在验证…"
+		}
+		if primaryButton(c.Key("cookie-ok"), label, nil, p, l.cookieBusy || strings.TrimSpace(l.cookieText) == "").Clicked() {
+			a.importCookie()
+		}
+	})
+}
+
+// importCookie signs in with the cookie in the login dialog, off the frame.
+func (a *app) importCookie() {
+	l := &a.login
+	if l.cookieBusy || strings.TrimSpace(l.cookieText) == "" {
+		return
+	}
+	l.cookieBusy, l.cookieErr = true, ""
+	gen, text := l.gen, l.cookieText
+	go func() {
+		prof, err := netease.ImportCookie(text)
+		a.post(func() {
+			l := &a.login
+			if gen != l.gen {
+				return
+			}
+			l.cookieBusy = false
+			switch {
+			case errors.Is(err, netease.ErrBadCookie):
+				l.cookieErr = "Cookie 无效或已过期，请重新复制 MUSIC_U"
+			case prof == nil:
+				l.cookieErr = "无法验证 Cookie，请检查网络"
+			default:
+				// Signed in, even if the keychain would not keep the session:
+				// then it lasts until the app quits.
+				l.cookieText, l.finished = "", true
+				l.scanner, l.avatar = prof.Nickname, prof.AvatarURL
+				a.signedIn(prof)
+				a.pickUp(prof.UserID)
+				a.closeLoginSoon(gen)
+			}
+		})
+	}()
+}
+
+// textLink is a line of small words that does something when clicked,
+// underlined under the pointer.
+func textLink(c *ui.Context, label string, fg ui.Color) ui.Element {
+	b := ui.ButtonBase(c).Padding(4, 2).FocusRing(false).Label(label)
+	underline := b.Hovered()
+	b.Children(func() {
+		t := ui.Text(c, label).FontSize(12).TextColor(fg)
+		if underline {
+			t.Underline()
+		}
+	})
+	return b
 }
 
 // drawQR draws a QR code in r, as crisp squares on white, inside a quiet

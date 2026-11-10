@@ -193,7 +193,7 @@ func (a *app) deskView(c *ui.Context) {
 	a.floatTheme(c)
 	a.followCover()
 	s, pl := &a.settings, a.pl
-	lines, _ := pl.Lyrics()
+	lines, _ := a.shownLyrics()
 	pos := a.lyricPos()
 	cur := lyrics.Index(lines, pos)
 	scale := float32(1)

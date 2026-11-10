@@ -586,8 +586,21 @@ func (a *app) settingsLyricsPage(k *settingsKit) {
 		k.row("歌词翻译", "在歌词下方显示翻译；播放栏的翻译按钮也能切换", func() {
 			k.toggle("lyric-trans", "歌词翻译", &s.LyricTrans, false, nil)
 		})
-		k.row("间奏时显示热评", "前奏、间奏与尾奏时，歌词处换成这首歌的热门评论", func() {
-			k.toggle("hot-comments", "间奏时显示热评", &s.HotComments, false, nil)
+		k.row("热评模式", "歌词处换成这首歌的热门评论，一条接一条地轮换", func() {
+			// Turned on, it shows them all along; those who had them in
+			// the quiet parts only keep that.
+			k.toggle("hot-comments", "热评模式", &s.HotComments, false, func() { s.HotAll = s.HotComments })
+		})
+		k.sub("仅在间奏时显示热评", "只在前奏、间奏与尾奏时显示热评，有歌词的地方照常显示歌词", s.HotComments, func() {
+			quiet := !s.HotAll
+			k.toggle("hot-quiet", "仅在间奏时显示热评", &quiet, false, func() { s.HotAll = !quiet })
+		})
+		k.row("逐字高亮", "有逐字歌词的歌，唱到哪个字亮到哪个字；关闭后整行一起亮起", func() {
+			words := !s.NpWholeLines
+			k.toggle("np-words", "逐字高亮", &words, false, func() { s.NpWholeLines = !words })
+		})
+		k.row("隐藏制作信息", "不显示作词、作曲、编曲、制作人等行，播放页与桌面歌词都生效", func() {
+			k.toggle("hide-credits", "隐藏制作信息", &s.HideCredits, false, nil)
 		})
 		k.row("歌词字号", "播放页歌词的大小；鼠标移到播放页也能调", func() {
 			labels, values := scaleChoices(70, 160)
@@ -735,6 +748,16 @@ func (a *app) settingsAppearancePage(k *settingsKit) {
 		})
 	})
 	k.group("文字与布局", func() {
+		k.row("界面缩放", "整个窗口的文字、图标与图片的大小；也可以按 Ctrl 加 + 或 - 调整，Ctrl 加 0 恢复", func() {
+			labels, values := scaleChoices(80, 200)
+			k.choose("ui-zoom", "界面缩放", scaleLabel(s.UIZoom), labels, func(i int) {
+				s.UIZoom = values[i]
+				if s.UIZoom == 1 {
+					s.UIZoom = 0
+				}
+				a.changed()
+			})
+		})
 		k.row("字体", "界面、歌词与评论使用的字体", func() {
 			fonts := a.fontChoices()
 			a.loadFontFiles()

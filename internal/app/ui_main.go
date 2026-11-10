@@ -36,6 +36,7 @@ func (a *app) view(c *ui.Context) {
 	t.Selection = p.accent.Alpha(0.3)
 	t.Font = a.fontFamily()
 	c.SetTheme(&t)
+	a.zoom(c)
 
 	a.shortcuts(c)
 	a.syncThumbs()
@@ -525,6 +526,8 @@ func (a *app) loadHome() {
 	a.homeLoading, a.homeErr = true, ""
 	a.style.loaded = false
 	a.loadStyle()
+	a.radar.lists = nil
+	a.loadRadars()
 	a.filteredPlaylists = [len(playlistFilters)]*playlistBrowseData{}
 	signedIn := a.profile != nil
 	at := time.Now()
