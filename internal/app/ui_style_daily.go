@@ -125,12 +125,12 @@ func (a *app) gridCell(c *ui.Context, cols int) float32 {
 
 // The style card's measures.
 const (
-	stylePad        = 18
-	styleRadius     = 20
-	styleSongRow    = 30
-	styleHead       = 58 // its label and title, over its songs
-	styleRoomy      = 260 // its songs' side this wide has room for how many
-	styleArtists    = 210 // and this wide for their singers
+	stylePad     = 18
+	styleRadius  = 20
+	styleSongRow = 30
+	styleHead    = 58  // its label and title, over its songs
+	styleRoomy   = 260 // its songs' side this wide has room for how many
+	styleArtists = 210 // and this wide for their singers
 )
 
 // styleCard is the style songs' card, one card across two of the grid's
