@@ -190,6 +190,13 @@ func TestGlassBackgroundOffIsKept(t *testing.T) {
 func TestGlassBackgroundRests(t *testing.T) {
 	a := newTestApp()
 	a.settings = defaultSettings()
+	tr := netease.Track{ID: 1, Duration: 120000}
+	tr.Album.PicURL = "cached-cover"
+	a.pl.Cue([]netease.Track{tr})
+	a.art.art[netease.Sized(tr.Album.PicURL, 600)+"#backdrop"] = &artwork{
+		backdrop: ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 16, 16))),
+		tint:     ui.RGB(90, 120, 210),
+	}
 	tt := ui.NewTester(func(c *ui.Context) {
 		a.pal = paletteFor(c.Theme())
 		a.glassPageBackdrop(ui.Box(c).Fill())
