@@ -243,7 +243,7 @@ func (a *app) lyricTools(c *ui.Context, id int64, at ui.Rect) {
 	reveal(bar, a.npPointer).Children(func() {
 		group := func(key string, chips func()) {
 			ui.Row(c.Key(key)).Height(32).Padding(2).Radius(999).AlignItems(ui.Center).
-				Background(white.Alpha(0.04)).Border(1, white.Alpha(0.1)).Children(chips)
+				Background(white.Alpha(0.04)).Children(chips)
 		}
 		fade := ui.Animation{Duration: 120 * time.Millisecond}
 		// Every button keeps its width, whatever it says: one that changed
