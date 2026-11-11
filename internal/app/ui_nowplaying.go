@@ -561,14 +561,23 @@ func (a *app) lyricsPane(c *ui.Context, tr *netease.Track, h float32) bool {
 	lag := a.lyricGlide.step(c, &a.lyricScroll)
 
 	scroll := ui.Scroll(c.Key("lyrics")).Grow(1).TrackScroll(&a.lyricScroll).Padding(0, 8, h*0.5, 0)
+	if a.settings.LyricPerspective {
+		scroll.Effect(scrollEdgeFade{depth: 72, top: easeRange(a.lyricScroll.Y, 0, 16), bottom: 1})
+	}
 	st := linesStyle{size: 30 * a.lyricScale(), weight: 800, lineHeight: 1.25, shift: shift}
-	if box := scroll.LayoutBounds(); a.settings.LyricPerspective && box.H > 0 {
+	if a.settings.LyricPerspective {
+		st.tilt = 2 * clamp01(float32(a.settings.LyricTilt))
+		if a.motion != motionOff {
+			st.bounce = clamp01(float32(a.settings.LyricBounce))
+		}
+	}
+	if box := scroll.LayoutBounds(); st.tilt > 0 && box.H > 0 {
 		// The sung line passes through the rightmost point of the arc.
 		st.focusY = max(1, min(box.H, h*0.53-box.Y))
 		st.arcY = box.Y + st.focusY + lag + a.lyricScroll.Y - beforeY
 		st.arcInset, st.arcRadius = min(125, box.W*0.17), box.H*0.82
-		scroll.Padding(st.focusY, 8+st.arcInset, max(h*0.5, box.H-st.focusY), 0).
-			TransformOrigin(0, st.focusY/box.H).RotateY(-19).Perspective(max(700, box.W*2.7))
+		scroll.Padding(st.focusY, 8+st.arcInset*st.tilt, max(h*0.5, box.H-st.focusY), 0).
+			TransformOrigin(0, st.focusY/box.H).RotateY(-19 * st.tilt).Perspective(max(700, box.W*2.7))
 	}
 	dim, quiet := a.quietShown(c, scroll, tr, lines, loaded)
 	if dim > 0.98 {
@@ -591,6 +600,8 @@ type linesStyle struct {
 	arcY       float32 // arc center in the previous layout's coordinates
 	arcInset   float32 // horizontal room reserved for the arc's rightmost point
 	arcRadius  float32
+	tilt       float32 // 1 preserves the original arc, 0 uses the flat layout
+	bounce     float32 // the strength of the automatic scroll's overshoot
 	quiet      bool
 	shift      time.Duration // how early they run, as a line clicked seeks
 }
@@ -642,7 +653,7 @@ func (a *app) timedLines(c *ui.Context, scroll ui.Element, lines []lyrics.Line, 
 					dy = max(-0.8*r, min(0.8*r, dy))
 					dx := float32(math.Sqrt(float64(r*r - dy*dy)))
 					angle := float32(math.Atan2(float64(dy), float64(dx))) * (0.45 * 180 / math.Pi)
-					line.Rotate(angle).Translate(max(0, st.arcInset-(r-dx)), 0)
+					line.Rotate(angle*st.tilt).Translate(max(0, st.arcInset-(r-dx))*st.tilt, 0)
 				}
 				line.AnimatePose(ui.Pose{Scale: scale}, ui.Animation{Spring: ui.SpringOptions{Duration: 600 * time.Millisecond, Bounce: 0.1}})
 				glows := on && a.settings.NpLight && !st.quiet
@@ -694,7 +705,7 @@ func (a *app) timedLines(c *ui.Context, scroll ui.Element, lines []lyrics.Line, 
 	box := scroll.LayoutBounds()
 	focus := lyricFocus{}
 	if st.focusY > 0 {
-		focus = lyricFocus{st.focusY, box.W, box.H, st.size, c.Theme().Font, a.settings.LyricTrans}
+		focus = lyricFocus{st.focusY, box.W, box.H, st.size, st.tilt, c.Theme().Font, a.settings.LyricTrans}
 	}
 	// Wait for layout to take the new padding or type size before measuring the target.
 	if focus != a.lyricGlide.focus {
@@ -721,7 +732,7 @@ func (a *app) timedLines(c *ui.Context, scroll ui.Element, lines []lyrics.Line, 
 			}
 		}
 		a.lyricAt = cur
-		a.lyricGlide.to(c, &a.lyricScroll, min(max(0, target), a.lyricScroll.MaxY))
+		a.lyricGlide.to(c, &a.lyricScroll, min(max(0, target), a.lyricScroll.MaxY), st.bounce)
 		if a.npK < 0.5 {
 			// Opening: they are there, rather than scrolling as the view grows.
 			a.lyricGlide.on = false
@@ -731,13 +742,13 @@ func (a *app) timedLines(c *ui.Context, scroll ui.Element, lines []lyrics.Line, 
 
 // lyricFocus records the layout inputs that can move the line relative to the arc.
 type lyricFocus struct {
-	y, width, height, size float32
-	font                   string
-	translation            bool
+	y, width, height, size, tilt float32
+	font                         string
+	translation                  bool
 }
 
-// lyricGlide scrolls the lyrics to the line sung, as a critically damped
-// spring, as ScrollTo's would. ScrollTo moves the offset in every frame,
+// lyricGlide scrolls the lyrics to the line sung with a damped spring.
+// ScrollTo moves the offset in every frame,
 // and MyGo builds the view again in the frame after each that moved it,
 // and its spring creeps over the last pixel for half a second: with a line
 // following another every second or two, most of a song. So the offset
@@ -745,10 +756,9 @@ type lyricFocus struct {
 // what the glide has still to go, its lag, which settles to nothing within
 // half a pixel.
 type lyricGlide struct {
-	on bool
-	// The lag t after start: (a + b·t)·e^(−ωt), in DIPs.
-	a, b  float64
-	start time.Time
+	on                     bool
+	a, b, decay, frequency float64
+	start                  time.Time
 	// The offset it goes to, set in the next frame (pending), with the lag
 	// that holds the lines back from it: the layout of the frame that
 	// chose it takes the offset too, the lines built without the lag.
@@ -768,20 +778,35 @@ func (g *lyricGlide) at(now time.Time) (lag, v float64) {
 		return 0, 0
 	}
 	t := now.Sub(g.start).Seconds()
-	e := math.Exp(-lyricOmega * t)
-	return (g.a + g.b*t) * e, (g.b - lyricOmega*(g.a+g.b*t)) * e
+	e := math.Exp(-g.decay * t)
+	if g.frequency == 0 {
+		lag := g.a + g.b*t
+		return lag * e, (g.b - g.decay*lag) * e
+	}
+	sin, cos := math.Sincos(g.frequency * t)
+	lag = g.a*cos + g.b*sin
+	return lag * e, (g.frequency*(g.b*cos-g.a*sin) - g.decay*lag) * e
 }
 
 // to scrolls s to target from the next frame, gliding from where it
 // shows, at the speed it went if it was on its way.
-func (g *lyricGlide) to(c *ui.Context, s *ui.ScrollState, target float32) {
+func (g *lyricGlide) to(c *ui.Context, s *ui.ScrollState, target, bounce float32) {
 	now := c.Now()
 	lag, v := g.at(now)
 	shown := float64(s.Y) + lag
 	g.target, g.pending = target, true
 	g.on = !c.Preferences().ReduceMotion
 	g.start, g.a = now, shown-float64(target)
-	g.b = v + lyricOmega*g.a
+	// Long seeks should land gently as well. Limit the bounce of a jump
+	// across many lines without changing the speed of ordinary line changes.
+	strength := float64(bounce) * 220 / max(220, math.Abs(g.a))
+	ratio := 1 - 0.45*strength
+	g.decay = lyricOmega * ratio
+	g.frequency = lyricOmega * math.Sqrt(1-ratio*ratio)
+	g.b = v + g.decay*g.a
+	if g.frequency > 0 {
+		g.b /= g.frequency
+	}
 	c.AnimationFrame()
 }
 
